@@ -53,7 +53,10 @@ function languageModel(model: ModelId) {
     entry && "googleId" in entry
       ? entry.googleId
       : model.slice("google/".length);
-  return createGoogleGenerativeAI({ apiKey: googleKey })(id);
+  const google = createGoogleGenerativeAI({ apiKey: googleKey });
+  return entry && "api" in entry && entry.api === "interactions"
+    ? google.interactions(id)
+    : google(id);
 }
 
 /** Prints one line per model call, so the cost and time are visible. */

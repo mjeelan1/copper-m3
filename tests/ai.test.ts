@@ -14,7 +14,8 @@ import { costUsd, PRICING } from "@/lib/ai/pricing";
 // Google hands back whatever mock model the test sets.
 let model: MockLanguageModelV4;
 vi.mock("@ai-sdk/google", () => ({
-  createGoogleGenerativeAI: () => () => model,
+  createGoogleGenerativeAI: () =>
+    Object.assign(() => model, { interactions: () => model }),
 }));
 
 function replyWith(text: string, input = 1000, output = 200) {
@@ -109,11 +110,11 @@ describe("lib/ai/call.ts", () => {
     expect(result.usage).toBeDefined();
   });
 
-  it("uses Gemini 2.5 Flash when no model is given", async () => {
+  it("uses Gemini 3.5 Flash-Lite when no model is given", async () => {
     const rows = captureLog();
     model = replyWith("ok");
     await callText({ module: 1, feature: "test" }, { prompt: "hi" });
-    expect(rows()[0].model).toBe("google/gemini-2.5-flash");
+    expect(rows()[0].model).toBe("google/gemini-3.5-flash-lite");
   });
 
   it("logs failed calls with ok: false and re-throws the error", async () => {

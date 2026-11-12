@@ -51,7 +51,8 @@ const INVENTORY = [
 // Google hands back whatever mock model the test sets.
 let model: MockLanguageModelV4;
 vi.mock("@ai-sdk/google", () => ({
-  createGoogleGenerativeAI: () => () => model,
+  createGoogleGenerativeAI: () =>
+    Object.assign(() => model, { interactions: () => model }),
 }));
 
 const usage = {
@@ -741,7 +742,7 @@ describe("Part C: askCopper", () => {
     expect(logged[0]).toMatchObject({
       module: 2,
       feature: "ask-copper",
-      model: "google/gemini-2.5-flash",
+      model: "google/gemini-3.5-flash-lite",
       ok: true,
     });
   });
