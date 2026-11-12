@@ -96,3 +96,32 @@ each step. Module 3 teaches it to answer from the customer documents.
 | Instructions | `lib/copper/assistant/instructions.ts` | `COPPER_INSTRUCTIONS`. Copper says it can't help yet with warranty, setup, troubleshooting or privacy |
 | Data | `lib/copper/inventory.ts`, `lib/copper/documents.ts` | Stock from `lib/copper/data/inventory.json`; `DOCUMENTS`: the four customer documents and their PDF paths under `public/docs/`. The PDFs are added in class |
 | AI calls | `{ module: 2, feature: "ask-copper" }` | One streamed call per question |
+
+## Module 3: Document passages and embeddings
+
+**Summary:** The four customer PDFs are split into passages of a few sentences
+and embedded with Gemini, so Ask Copper can later find the passages that answer
+a question (RAG). The passages and their embeddings live in one JSON file that
+the server loads into memory when it starts.
+
+| Piece | Where | What it does |
+|---|---|---|
+| PDFs | `public/docs/*.pdf` | The customer documents listed in `lib/copper/documents.ts`, also served at their `file` URLs |
+| Build script | `scripts/build-passages.ts` (`npm run build:passages`) | Reads every PDF page with `unpdf`, splits it with `splitPage()`, embeds every passage and writes the JSON. `--dry-run` prints the passages without embedding. Run it again whenever a PDF changes |
+| Splitter | `lib/copper/split-page.ts` | Drops each page's header, joins wrapped lines, keeps headings and FAQ questions with the text after them, and makes passages of up to 4 sentences / about 600 characters |
+| Data | `lib/copper/data/passages.json` | 89 passages: `id`, `documentId`, `title`, `file`, `page`, `text` (starts with the document title) and `embedding` (768 numbers, length 1) |
+| Loader | `lib/copper/passages.ts`, `instrumentation.ts` | `getPassages()` / `passagesInfo()`. `register()` loads the file when the server starts and logs `[passages] loaded N passages` |
+| AI calls | `callEmbed` in `lib/ai/call.ts`; `{ module: 3, feature: "embed-passages" }` | `gemini-embedding-2` with `RETRIEVAL_DOCUMENT`, one batch per build. Questions must be embedded with the same model and `RETRIEVAL_QUERY` |
+
+**Data flow:** `npm run build:passages` → PDF pages → passages → Gemini
+embeddings → `passages.json` → loaded into memory at server start.
+
+**Decisions and trade-offs:** 768 dimensions instead of 3072 keeps the file
+about 0.7 MB; vectors are scaled to length 1 so a dot product is the cosine
+similarity. Embeddings are built ahead of time, not at startup, so starting the
+server never calls Google. Passages carry their document title in their text
+so a passage like "Q Can I get a refund?" still says which document it's from.
+
+**Risks and open questions:** the file goes stale if a PDF changes and the
+script isn't re-run. Tables come through as flattened rows, and a long table
+can be split across two passages.

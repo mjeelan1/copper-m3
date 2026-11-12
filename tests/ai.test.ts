@@ -1,21 +1,26 @@
 // @vitest-environment node
-import { MockLanguageModelV4 } from "ai/test";
+import { MockEmbeddingModelV4, MockLanguageModelV4 } from "ai/test";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { z } from "zod";
 import {
   AiNotConfiguredError,
+  callEmbed,
   callObject,
   callText,
   isAiConfigured,
 } from "@/lib/ai/call";
-import { MODELS } from "@/lib/ai/models";
+import { EMBEDDING_MODEL, MODELS } from "@/lib/ai/models";
 import { costUsd, PRICING } from "@/lib/ai/pricing";
 
 // Google hands back whatever mock model the test sets.
 let model: MockLanguageModelV4;
+let embeddingModel: MockEmbeddingModelV4;
 vi.mock("@ai-sdk/google", () => ({
   createGoogleGenerativeAI: () =>
-    Object.assign(() => model, { interactions: () => model }),
+    Object.assign(() => model, {
+      interactions: () => model,
+      embedding: () => embeddingModel,
+    }),
 }));
 
 function replyWith(text: string, input = 1000, output = 200) {
@@ -53,6 +58,57 @@ beforeEach(() => {
 afterEach(() => {
   vi.unstubAllEnvs();
   vi.restoreAllMocks();
+});
+
+describe("callEmbed", () => {
+  it("returns one length-1 vector per text, asks for the task and size, and logs the call", async () => {
+    const rows = captureLog();
+    embeddingModel = new MockEmbeddingModelV4({
+      maxEmbeddingsPerCall: 100,
+      doEmbed: {
+        embeddings: [
+          [3, 4],
+          [0, 2],
+        ],
+        warnings: [],
+      },
+    });
+    const vectors = await callEmbed(
+      { module: 3, feature: "embed-passages" },
+      ["first", "second"],
+      "RETRIEVAL_DOCUMENT",
+    );
+    expect(vectors).toEqual([
+      [0.6, 0.8],
+      [0, 1],
+    ]);
+    expect(embeddingModel.doEmbedCalls[0].providerOptions).toMatchObject({
+      google: {
+        taskType: "RETRIEVAL_DOCUMENT",
+        outputDimensionality: EMBEDDING_MODEL.dimensions,
+      },
+    });
+    expect(rows()[0]).toMatchObject({
+      module: 3,
+      feature: "embed-passages",
+      model: "google/gemini-embedding-2",
+      ok: true,
+      cost_usd: null,
+    });
+  });
+
+  it("logs a failed call with ok: false and re-throws the error", async () => {
+    const rows = captureLog();
+    embeddingModel = new MockEmbeddingModelV4({
+      doEmbed: async () => {
+        throw new Error("google down");
+      },
+    });
+    await expect(
+      callEmbed({ module: 3, feature: "test" }, ["x"], "RETRIEVAL_QUERY"),
+    ).rejects.toThrow("google down");
+    expect(rows()[0]).toMatchObject({ ok: false });
+  });
 });
 
 describe("pricing", () => {

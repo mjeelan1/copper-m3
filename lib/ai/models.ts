@@ -34,6 +34,21 @@ export type ModelId = (typeof MODELS)[number]["id"];
  */
 export const DEFAULT_MODEL: ModelId = "google/gemini-3.5-flash-lite";
 
+/**
+ * The embedding model: turns text into a list of numbers (a vector) so text
+ * with similar meaning gets similar numbers. Used to search the customer
+ * documents (lib/copper/passages.ts).
+ */
+export const EMBEDDING_MODEL = {
+  id: "google/gemini-embedding-2",
+  googleId: "gemini-embedding-2",
+  // One of the sizes Google recommends. Smaller than the 3072 default, which
+  // keeps lib/copper/data/passages.json small.
+  dimensions: 768,
+} as const;
+
+export type EmbeddingModelId = typeof EMBEDDING_MODEL.id;
+
 /** AI_MODEL if it names an approved model, otherwise the default. */
 export function defaultModel(): ModelId {
   const id = process.env.AI_MODEL;

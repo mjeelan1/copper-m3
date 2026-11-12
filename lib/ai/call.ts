@@ -1,7 +1,13 @@
 import { createGoogleGenerativeAI } from "@ai-sdk/google";
-import { generateText, Output, streamText } from "ai";
+import { embedMany, generateText, Output, streamText } from "ai";
 import type { z } from "zod";
-import { defaultModel, MODELS, type ModelId } from "@/lib/ai/models";
+import {
+  defaultModel,
+  EMBEDDING_MODEL,
+  type EmbeddingModelId,
+  MODELS,
+  type ModelId,
+} from "@/lib/ai/models";
 import { costUsd } from "@/lib/ai/pricing";
 
 // Every model call in the app goes through this file, so each one is logged
@@ -36,7 +42,7 @@ type TextOptions = DistributiveOmit<
 export type AiCallRow = {
   module: number;
   feature: string;
-  model: ModelId;
+  model: ModelId | EmbeddingModelId;
   input_tokens: number | null;
   output_tokens: number | null;
   cost_usd: number | null;
@@ -45,15 +51,19 @@ export type AiCallRow = {
   created_at: string;
 };
 
-function languageModel(model: ModelId) {
+function googleProvider() {
   const googleKey = process.env.GOOGLE_GENERATIVE_AI_API_KEY?.trim();
   if (!googleKey) throw new AiNotConfiguredError();
+  return createGoogleGenerativeAI({ apiKey: googleKey });
+}
+
+function languageModel(model: ModelId) {
+  const google = googleProvider();
   const entry = MODELS.find((m) => m.id === model);
   const id =
     entry && "googleId" in entry
       ? entry.googleId
       : model.slice("google/".length);
-  const google = createGoogleGenerativeAI({ apiKey: googleKey });
   return entry && "api" in entry && entry.api === "interactions"
     ? google.interactions(id)
     : google(id);
@@ -127,6 +137,61 @@ export async function callObject<Schema extends z.ZodType>(
   // Spreading `rest` loses generateText's output type; Output.object has
   // already validated it against `schema`, so restore the type here.
   return result as typeof result & { output: z.infer<Schema> };
+}
+
+/**
+ * What the texts are for: RETRIEVAL_DOCUMENT for passages that get searched,
+ * RETRIEVAL_QUERY for the question you search them with.
+ */
+export type EmbedTask = "RETRIEVAL_DOCUMENT" | "RETRIEVAL_QUERY";
+
+/** Scales a vector to length 1, so the dot product of two is their cosine similarity. */
+export function normalize(vector: number[]): number[] {
+  const length = Math.hypot(...vector);
+  return length === 0 ? vector : vector.map((x) => x / length);
+}
+
+/**
+ * Embeds texts with EMBEDDING_MODEL: one vector of length 1 per text, in the
+ * same order. Logged to ai_calls like every other call (the cost is null:
+ * Google doesn't report tokens for embeddings).
+ * Example: callEmbed({ module: 3, feature: "embed-passages" }, texts, "RETRIEVAL_DOCUMENT")
+ */
+export async function callEmbed(
+  info: Omit<CallInfo, "model">,
+  values: string[],
+  task: EmbedTask,
+): Promise<number[][]> {
+  const google = googleProvider();
+  const started = performance.now();
+  const row = (ok: boolean, tokens?: number): AiCallRow => ({
+    module: info.module,
+    feature: info.feature,
+    model: EMBEDDING_MODEL.id,
+    input_tokens: Number.isFinite(tokens) ? (tokens as number) : null,
+    output_tokens: null,
+    cost_usd: null,
+    latency_ms: Math.round(performance.now() - started),
+    ok,
+    created_at: new Date().toISOString(),
+  });
+  try {
+    const result = await embedMany({
+      model: google.embedding(EMBEDDING_MODEL.googleId),
+      values,
+      providerOptions: {
+        google: {
+          taskType: task,
+          outputDimensionality: EMBEDDING_MODEL.dimensions,
+        },
+      },
+    });
+    await logCall(row(true, result.usage?.tokens));
+    return result.embeddings.map(normalize);
+  } catch (error) {
+    await logCall(row(false));
+    throw error;
+  }
 }
 
 type StreamOptions = DistributiveOmit<
