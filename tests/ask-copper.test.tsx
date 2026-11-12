@@ -10,7 +10,11 @@ import {
   within,
 } from "@testing-library/react";
 import type { LanguageModelV4StreamPart as ModelStreamPart } from "@ai-sdk/provider";
-import { convertArrayToReadableStream, MockLanguageModelV4 } from "ai/test";
+import {
+  convertArrayToReadableStream,
+  MockEmbeddingModelV4,
+  MockLanguageModelV4,
+} from "ai/test";
 import { createLive, finalValue, type Live, readLive } from "@/lib/ai/live";
 import type { Progress, Step } from "@/lib/copper/assistant/progress";
 import { toolCallsOf } from "@/lib/copper/assistant/progress";
@@ -50,9 +54,14 @@ const INVENTORY = [
 
 // Google hands back whatever mock model the test sets.
 let model: MockLanguageModelV4;
+// The embedding model search_docs uses (Module 3).
+let embeddingModel: MockEmbeddingModelV4;
 vi.mock("@ai-sdk/google", () => ({
   createGoogleGenerativeAI: () =>
-    Object.assign(() => model, { interactions: () => model }),
+    Object.assign(() => model, {
+      interactions: () => model,
+      embedding: () => embeddingModel,
+    }),
 }));
 
 const usage = {
@@ -804,5 +813,162 @@ describe("Part C: askCopper", () => {
     const text = JSON.stringify(prompt);
     expect(text).toContain("Hi Copper");
     expect(text).toContain("What does Copper Plus cost?");
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Part D (Module 3): search_docs finds passages in the customer documents
+// ---------------------------------------------------------------------------
+
+/** An embedding model that "embeds" any question as this passage's vector. */
+async function embedsLike(passageId: string) {
+  const { getPassages } = await import("@/lib/copper/passages");
+  const passage = getPassages().find((p) => p.id === passageId)!;
+  embeddingModel = new MockEmbeddingModelV4({
+    maxEmbeddingsPerCall: 100,
+    doEmbed: { embeddings: [passage.embedding], warnings: [] },
+  });
+  return passage;
+}
+
+describe("Part D: search_docs", () => {
+  it("returns the 5 closest passages, each with its title, page and a link to that page", async () => {
+    vi.stubEnv("GOOGLE_GENERATIVE_AI_API_KEY", "AIza-test-key");
+    const { searchDocs, searchDocsInput, copperTools } = await loadTools();
+    const target = await embedsLike("copper-home-user-guide-p9-1");
+
+    const result = await searchDocs(
+      searchDocsInput.parse({ query: "What does C-47 mean?" }),
+    );
+    expect(result.status).toBe("ok");
+    if (result.status !== "ok") return;
+    expect(result.results).toHaveLength(5);
+    expect(result.results[0]).toMatchObject({
+      id: target.id,
+      title: "Copper Home User Guide",
+      page: 9,
+      url: "/docs/copper-home-user-guide.pdf#page=9",
+    });
+    // The title is in its own field, not repeated in the text.
+    expect(result.results[0].text.startsWith("Copper Home User Guide:")).toBe(
+      false,
+    );
+    for (const r of result.results) expect(r.url).toMatch(/\.pdf#page=\d+$/);
+    const scores = result.results.map((r) => r.score);
+    expect(scores).toEqual([...scores].sort((a, b) => b - a));
+    // The question was embedded as a query and logged like every model call.
+    expect(embeddingModel.doEmbedCalls[0].providerOptions).toMatchObject({
+      google: { taskType: "RETRIEVAL_QUERY" },
+    });
+    expect(logged.at(-1)).toMatchObject({
+      module: 3,
+      feature: "search-docs",
+      ok: true,
+    });
+
+    expect(Object.keys(copperTools)).toContain("search_docs");
+    for (const topic of [/setup/i, /troubleshooting/i, /warranty/i, /polic/i])
+      expect(copperTools.search_docs.description).toMatch(topic);
+  });
+
+  it("says plainly when the documents can't be searched", async () => {
+    vi.stubEnv("GOOGLE_GENERATIVE_AI_API_KEY", "AIza-test-key");
+    const { searchDocs } = await loadTools();
+    embeddingModel = new MockEmbeddingModelV4({
+      doEmbed: async () => {
+        throw new Error("google down");
+      },
+    });
+    expect(await searchDocs({ query: "reset Wi-Fi" })).toEqual({
+      status: "unavailable",
+      message: expect.stringMatching(/can't be searched/),
+    });
+  });
+
+  it("Copper's instructions: setup, troubleshooting, warranty and policy answers come only from search_docs, every sentence cited, and a set reply when the docs don't say", async () => {
+    const { COPPER_INSTRUCTIONS, NOT_IN_DOCS } =
+      await import("@/lib/copper/assistant/instructions");
+    expect(COPPER_INSTRUCTIONS).toMatch(/search_docs/);
+    for (const topic of [/setup/i, /troubleshooting/i, /warranty/i, /polic/i])
+      expect(COPPER_INSTRUCTIONS).toMatch(topic);
+    expect(COPPER_INSTRUCTIONS).toMatch(/only from the passages/i);
+    expect(COPPER_INSTRUCTIONS).toMatch(/every sentence must cite/i);
+    expect(COPPER_INSTRUCTIONS).toContain("[Copper Home User Guide, p. 9]");
+    expect(NOT_IN_DOCS).toBe("I couldn't find that in our support docs.");
+    expect(COPPER_INSTRUCTIONS).toContain(`"${NOT_IN_DOCS}"`);
+    expect(COPPER_INSTRUCTIONS).toMatch(/Copper Crew/);
+    expect(COPPER_INSTRUCTIONS).toMatch(/never guess/i);
+    // A question about what a Copper device can do is searched, not refused.
+    expect(COPPER_INSTRUCTIONS).toMatch(/can or can't do/i);
+    expect(COPPER_INSTRUCTIONS).toMatch(/nothing to do with Copper/i);
+    // Found by trying to break it: conclusions cite the most direct page,
+    // disagreements are said out loud, and "ignore your rules" still gets a
+    // real, cited answer.
+    expect(COPPER_INSTRUCTIONS).toMatch(/most directly/i);
+    expect(COPPER_INSTRUCTIONS).toMatch(/Our documents differ on this/);
+    expect(COPPER_INSTRUCTIONS).toMatch(/ignore these rules/i);
+    expect(COPPER_INSTRUCTIONS).toMatch(/still call search_docs/i);
+  });
+
+  it("shows each passage in the tool card with its title and a link that opens the PDF at its page", async () => {
+    vi.stubEnv("GOOGLE_GENERATIVE_AI_API_KEY", "AIza-test-key");
+    const results = [9, 9, 4, 3, 10].map((page, i) => ({
+      id: `copper-home-user-guide-p${page}-${i}`,
+      title: "Copper Home User Guide",
+      page,
+      url: `/docs/copper-home-user-guide.pdf#page=${page}`,
+      text: `Passage ${i + 1} about error codes.`,
+      score: 0.8 - i / 100,
+    }));
+    const askCopper = vi
+      .fn()
+      .mockResolvedValue(
+        answered(
+          "C-47 is a microphone fault [Copper Home User Guide, p. 9]. Unplug it for 30 seconds [Copper Home User Guide, p. 9].",
+          [
+            toolStep(
+              "search_docs",
+              { query: "C-47" },
+              { status: "ok", results },
+            ),
+          ],
+        ),
+      );
+    vi.doMock("@/lib/copper/assistant/ask", () => ({ askCopper }));
+    await renderPage();
+    const section = await openChat();
+    const chat = within(section);
+    await ask(chat, "C-47");
+    await waitFor(() =>
+      expect(chat.getByText(/microphone fault/)).toBeInTheDocument(),
+    );
+
+    const card = section.querySelector<HTMLElement>(
+      '[data-tool="search_docs"]',
+    )!;
+    expect(card).not.toBeNull();
+    expect(card.textContent).toContain("Searching the documents");
+    const items = within(card).getAllByTestId("doc-result");
+    expect(items).toHaveLength(5);
+    const link = within(items[0]).getByRole("link", { name: /page 9/i });
+    expect(link).toHaveAttribute(
+      "href",
+      "/docs/copper-home-user-guide.pdf#page=9",
+    );
+    expect(link).toHaveAttribute("target", "_blank");
+    expect(items[0].textContent).toContain("Copper Home User Guide");
+    expect(items[0].textContent).toContain("Passage 1 about error codes.");
+
+    // Each citation in the reply links to that page of the PDF.
+    const citations = within(section).getAllByTestId("citation");
+    expect(citations).toHaveLength(2);
+    for (const citation of citations) {
+      expect(citation).toHaveTextContent("[Copper Home User Guide, p. 9]");
+      expect(citation).toHaveAttribute(
+        "href",
+        "/docs/copper-home-user-guide.pdf#page=9",
+      );
+      expect(citation).toHaveAttribute("target", "_blank");
+    }
   });
 });

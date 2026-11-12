@@ -1,6 +1,7 @@
-// Module 2: the four tools Ask Copper can use. Products and prices come from
+// The tools Ask Copper can use. Module 2: products and prices come from
 // lib/copper/catalog.ts and stock from lib/copper/inventory.ts, so the
-// chatbot never has to make them up.
+// chatbot never has to make them up. Module 3: search_docs finds the passages
+// of the customer documents that answer a question (lib/copper/passages.ts).
 // Each tool returns plain data; the model writes the reply around it.
 import { tool } from "ai";
 import { z } from "zod";
@@ -11,6 +12,7 @@ import {
   type ProductId,
 } from "@/lib/copper/catalog";
 import { readInventory } from "@/lib/copper/inventory";
+import { type DocMatch, searchPassages } from "@/lib/copper/passages";
 
 export type ProductList = {
   products: {
@@ -177,6 +179,42 @@ export async function checkAvailability(
   };
 }
 
+export type SearchDocsInput = { query: string };
+
+export type DocSearch =
+  | { status: "ok"; results: DocMatch[] }
+  | { status: "unavailable"; message: string };
+
+/** How many passages search_docs returns. */
+export const SEARCH_RESULTS = 5;
+
+export const searchDocsInput = z.object({
+  query: z
+    .string()
+    .trim()
+    .min(2)
+    .max(300)
+    .describe(
+      "What to look up, in plain words: the customer's question or a short phrase like 'C-47 error' or 'annual plan refund'",
+    ),
+}) satisfies z.ZodType<SearchDocsInput>;
+
+/** search_docs: the 5 passages of the customer documents closest to the query. */
+export async function searchDocs(input: SearchDocsInput): Promise<DocSearch> {
+  try {
+    return {
+      status: "ok",
+      results: await searchPassages(input.query, SEARCH_RESULTS),
+    };
+  } catch {
+    return {
+      status: "unavailable",
+      message:
+        "The documents can't be searched right now. Please try again soon.",
+    };
+  }
+}
+
 export const copperTools = {
   get_products: tool({
     description:
@@ -200,5 +238,11 @@ export const copperTools = {
       "Checks today's stock for a Copper product, for every color or just one.",
     inputSchema: checkAvailabilityInput,
     execute: async (input) => checkAvailability(input),
+  }),
+  search_docs: tool({
+    description:
+      "Searches Copper's customer documents (the Copper Home and Copper Notes user guides, the Copper Plus FAQ, and the Terms and Conditions) and returns the 5 closest passages, each with its document title, page number and a link to that page. Use it for setup, Wi-Fi, troubleshooting and error codes, warranty, returns and refunds, billing and subscription rules, and privacy and other policies.",
+    inputSchema: searchDocsInput,
+    execute: async (input) => searchDocs(input),
   }),
 };

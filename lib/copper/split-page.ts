@@ -33,6 +33,18 @@ const SENTENCE_END =
 const isHeading = (text: string) =>
   !/[.!"”)]$/.test(text) || /^\d+(\.\d+)*\.?\s+[^.!?]{1,40}\.$/.test(text);
 
+/** A numbered section or clause, like "4.7 Price changes." */
+const NUMBERED = /^\d+(\.\d+)*\.?\s+[A-Z]/;
+
+/**
+ * Whether a heading-like line at the end of a passage moves on to introduce
+ * `next`. An unnumbered line right before a numbered clause doesn't: the
+ * clause has its own title, so the line is the end of what came before, like
+ * the last cell of a table ("After 14 days, not refunded").
+ */
+const introduces = (line: string, next: string) =>
+  isHeading(line) && !(NUMBERED.test(next) && !NUMBERED.test(line));
+
 /**
  * The page's text without its header. Every page of the Copper documents
  * starts with a running title, the document code and a copyright line.
@@ -96,10 +108,10 @@ export function splitPage(raw: string): string[] {
   const fits = (more: string[]) =>
     current.length + more.length <= MAX_SENTENCES &&
     [...current, ...more].join(" ").length <= MAX_CHARS;
-  /** Ends the passage, keeping any headings at its end for the next one. */
-  const startNew = () => {
+  /** Ends the passage, keeping any headings at its end for `next`. */
+  const startNew = (next: string) => {
     const carried: string[] = [];
-    while (current.length && isHeading(current.at(-1)!))
+    while (current.length && introduces(current.at(-1)!, carried[0] ?? next))
       carried.unshift(current.pop()!);
     if (current.length) passages.push(current.join(" "));
     current = carried;
@@ -111,9 +123,9 @@ export function splitPage(raw: string): string[] {
       current.push(...parts);
       continue;
     }
-    startNew();
+    startNew(parts[0]);
     for (const sentence of parts) {
-      if (!fits([sentence]) && !current.every(isHeading)) startNew();
+      if (!fits([sentence]) && !current.every(isHeading)) startNew(sentence);
       current.push(sentence);
     }
   }

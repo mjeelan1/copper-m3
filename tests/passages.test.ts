@@ -52,6 +52,27 @@ describe("splitPage", () => {
     expect(passages.length).toBeGreaterThan(1);
     for (const p of passages) expect(p.length).toBeLessThanOrEqual(750);
   });
+
+  it("keeps the last cell of a table with its table, not with the next clause", () => {
+    // The refund table on page 4 of the Terms ends in a cell with no full stop.
+    const table = [
+      "Copper State Labs Terms and Conditions Effective January 1, 2026",
+      "CSL-LGL-0001 Version 2026.1 Page 4 of 7",
+      "© 2026 Copper State Labs, Inc. · Fictional company and documents, for educational use only.",
+      "4.5 Cancel anytime. Cancel in the Copper app under Settings > Subscription. You keep Copper Plus until the end of the period you've paid for, and nothing more is charged after that.",
+      "4.6 Refunds.",
+      "Plan Refund rule",
+      "Monthly Not refunded for partial months",
+      "Annual Full refund if you cancel within 14 days of purchase.",
+      "After 14 days, not refunded",
+      "4.7 Price changes. We'll tell you at least 30 days before a price change takes effect. The new price applies from your next renewal, and you can cancel before then.",
+    ].join("\n");
+    const split = splitPage(table);
+    expect(split.some((p) => p.endsWith("After 14 days, not refunded"))).toBe(
+      true,
+    );
+    expect(split.some((p) => p.startsWith("4.7 Price changes."))).toBe(true);
+  });
 });
 
 describe("lib/copper/data/passages.json", () => {

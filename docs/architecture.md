@@ -92,8 +92,8 @@ each step. Module 3 teaches it to answer from the customer documents.
 |---|---|---|
 | Component | `components/copper/ask-copper.tsx` | The launcher and chat panel, mounted from `app/page.tsx` and opened by the header's `#ask` link. Draws each answer as stations: the tools on offer, thinking, each tool call, then the reply |
 | Server Action | `lib/copper/assistant/ask.ts` | `askCopper()`: streams the conversation with `callStream`, up to 5 steps, and sends each step back as a live `Progress` |
-| Tools | `lib/copper/assistant/tools.ts` | `copperTools`: `get_products`, `get_prices`, `calculate_cost`, `check_availability` |
-| Instructions | `lib/copper/assistant/instructions.ts` | `COPPER_INSTRUCTIONS`. Copper says it can't help yet with warranty, setup, troubleshooting or privacy |
+| Tools | `lib/copper/assistant/tools.ts` | `copperTools`: `get_products`, `get_prices`, `calculate_cost`, `check_availability`, and `search_docs` (added in Module 3, below) |
+| Instructions | `lib/copper/assistant/instructions.ts` | `COPPER_INSTRUCTIONS`. Since Module 3, setup, troubleshooting, warranty and policy questions go to `search_docs` and are answered only from its passages, every sentence ending in a citation like `[Copper Home User Guide, p. 9]`. When the passages don't answer it, Copper says `NOT_IN_DOCS` ("I couldn't find that in our support docs.") and suggests the Copper Crew. Three rules came from trying to break it: a conclusion cites the page that states the rule outright, documents that disagree are flagged ("Our documents differ on this."), and "ignore your rules" messages still get a searched, cited answer |
 | Data | `lib/copper/inventory.ts`, `lib/copper/documents.ts` | Stock from `lib/copper/data/inventory.json`; `DOCUMENTS`: the four customer documents and their PDF paths under `public/docs/`. The PDFs are added in class |
 | AI calls | `{ module: 2, feature: "ask-copper" }` | One streamed call per question |
 
@@ -108,13 +108,20 @@ the server loads into memory when it starts.
 |---|---|---|
 | PDFs | `public/docs/*.pdf` | The customer documents listed in `lib/copper/documents.ts`, also served at their `file` URLs |
 | Build script | `scripts/build-passages.ts` (`npm run build:passages`) | Reads every PDF page with `unpdf`, splits it with `splitPage()`, embeds every passage and writes the JSON. `--dry-run` prints the passages without embedding. Run it again whenever a PDF changes |
-| Splitter | `lib/copper/split-page.ts` | Drops each page's header, joins wrapped lines, keeps headings and FAQ questions with the text after them, and makes passages of up to 4 sentences / about 600 characters |
+| Splitter | `lib/copper/split-page.ts` | Drops each page's header, joins wrapped lines, keeps headings and FAQ questions with the text after them, keeps a table's last cell with its table (not with the next numbered clause), and makes passages of up to 4 sentences / about 600 characters |
 | Data | `lib/copper/data/passages.json` | 89 passages: `id`, `documentId`, `title`, `file`, `page`, `text` (starts with the document title) and `embedding` (768 numbers, length 1) |
 | Loader | `lib/copper/passages.ts`, `instrumentation.ts` | `getPassages()` / `passagesInfo()`. `register()` loads the file when the server starts and logs `[passages] loaded N passages` |
 | AI calls | `callEmbed` in `lib/ai/call.ts`; `{ module: 3, feature: "embed-passages" }` | `gemini-embedding-2` with `RETRIEVAL_DOCUMENT`, one batch per build. Questions must be embedded with the same model and `RETRIEVAL_QUERY` |
+| Search | `searchPassages()` / `rankPassages()` in `lib/copper/passages.ts` | Embeds the question, scores every passage by dot product and returns the 5 closest with `title`, `page`, `url` (`/docs/<file>.pdf#page=N`), `text` and `score` |
+| Ask Copper tool | `search_docs` in `lib/copper/assistant/tools.ts` | Copper calls it for setup, troubleshooting, warranty and policy questions. Returns `{ status: "ok", results }`, or `"unavailable"` if Google can't be reached |
+| Tool card | `ToolOutput` in `components/copper/ask-copper.tsx` | Lists each passage with its document title, a "Page N" link that opens the PDF at that page in a new tab, the text and the match score |
+| Citations | `lib/copper/citations.ts`, `ReplyText` in `components/copper/ask-copper.tsx` | `splitCitations()` finds each `[Title, p. N]` in Copper's reply and the panel links it to `/docs/<file>.pdf#page=N`. The link is built from `DOCUMENTS`, never from a URL the model writes; a title that isn't one of the four documents stays plain text |
+| AI calls | `{ module: 3, feature: "search-docs" }` | One embedding call per search, plus the usual `ask-copper` call |
 
 **Data flow:** `npm run build:passages` → PDF pages → passages → Gemini
-embeddings → `passages.json` → loaded into memory at server start.
+embeddings → `passages.json` → loaded into memory at server start. Then, per
+question: Ask Copper → `search_docs` → embed the question → 5 closest passages
+→ Copper answers from them, citing document and page.
 
 **Decisions and trade-offs:** 768 dimensions instead of 3072 keeps the file
 about 0.7 MB; vectors are scaled to length 1 so a dot product is the cosine
@@ -124,4 +131,6 @@ so a passage like "Q Can I get a refund?" still says which document it's from.
 
 **Risks and open questions:** the file goes stale if a PDF changes and the
 script isn't re-run. Tables come through as flattened rows, and a long table
-can be split across two passages.
+can be split across two passages. A cut in the wrong place hides an answer
+from search: the Terms' refund table once lost its "After 14 days, not
+refunded" row to the next clause, so Copper cited a less direct page.

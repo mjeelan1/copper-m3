@@ -9,6 +9,8 @@ import {
   ArrowRightIcon,
   ArrowUpIcon,
   BrainIcon,
+  ExternalLinkIcon,
+  FileTextIcon,
   MessageCircleIcon,
   TriangleAlertIcon,
   WrenchIcon,
@@ -34,6 +36,7 @@ import {
   TOOL_LABELS,
 } from "@/lib/copper/assistant/progress";
 import { formatUsd, getPlans, getProducts } from "@/lib/copper/catalog";
+import { splitCitations } from "@/lib/copper/citations";
 import { cn } from "@/lib/utils";
 
 const STARTERS = [
@@ -148,7 +151,7 @@ export function AskCopper({ aiConfigured }: { aiConfigured: boolean }) {
                   Ask Copper
                 </SheetTitle>
                 <SheetDescription className="text-xs text-white/70">
-                  Prices, totals and stock, checked with tools.
+                  Prices, stock, setup and policies, checked with tools.
                 </SheetDescription>
               </div>
               <SheetClose asChild>
@@ -225,7 +228,7 @@ export function AskCopper({ aiConfigured }: { aiConfigured: boolean }) {
                   aria-label="Your question"
                   value={draft}
                   onChange={(event) => setDraft(event.target.value)}
-                  placeholder="Ask about prices or stock…"
+                  placeholder="Ask about prices, stock, setup or policies…"
                   className="bg-background focus-visible:ring-ring h-10 flex-1 rounded-full border px-4 text-sm outline-none focus-visible:ring-2"
                 />
                 <Button
@@ -383,7 +386,7 @@ function Answer({
             </div>
           )}
           <p className="text-sm whitespace-pre-wrap">
-            {reply}
+            <ReplyText text={reply} />
             {working && (
               <span className="bg-primary ml-0.5 inline-block h-4 w-0.5 animate-pulse align-middle" />
             )}
@@ -420,6 +423,27 @@ function Station({
       </p>
       {children}
     </section>
+  );
+}
+
+/** Copper's reply, with each "[Title, p. N]" citation linked to that PDF page. */
+function ReplyText({ text }: { text: string }) {
+  return splitCitations(text).map((part, i) =>
+    typeof part === "string" ? (
+      part
+    ) : (
+      <a
+        key={i}
+        href={part.url}
+        target="_blank"
+        rel="noopener noreferrer"
+        data-testid="citation"
+        title={`Open ${part.title} at page ${part.page}`}
+        className="text-primary font-medium underline underline-offset-2"
+      >
+        {part.label}
+      </a>
+    ),
   );
 }
 
@@ -603,6 +627,46 @@ function ToolOutput({ name, output }: { name: string; output: any }) {
           </div>
         ))}
       </div>
+    );
+  }
+  if (name === "search_docs" && output?.status) {
+    if (output.status === "unavailable")
+      return <p className="text-xs">{output.message}</p>;
+    if (!output.results?.length)
+      return <p className="text-xs">No passages found.</p>;
+    return (
+      <ol className="space-y-2 text-xs" aria-label="Passages found">
+        {output.results.map((r: any) => (
+          <li
+            key={r.id}
+            data-testid="doc-result"
+            className="bg-card rounded-lg border p-2"
+          >
+            <div className="flex items-center gap-1.5">
+              <FileTextIcon className="text-primary size-3.5 shrink-0" />
+              <span className="min-w-0 flex-1 truncate font-semibold">
+                {r.title}
+              </span>
+              <a
+                href={r.url}
+                target="_blank"
+                rel="noopener noreferrer"
+                className="text-primary inline-flex shrink-0 items-center gap-0.5 font-medium underline-offset-2 hover:underline"
+              >
+                Page {r.page}
+                <ExternalLinkIcon className="size-3" />
+                <span className="sr-only">
+                  (opens {r.title} at page {r.page} in a new tab)
+                </span>
+              </a>
+            </div>
+            <p className="text-muted-foreground mt-1 line-clamp-3">{r.text}</p>
+            <p className="text-muted-foreground/70 mt-1 font-mono text-[10px]">
+              match {Number(r.score).toFixed(2)}
+            </p>
+          </li>
+        ))}
+      </ol>
     );
   }
   // A tool without its own layout yet: show what came back as plain text.
